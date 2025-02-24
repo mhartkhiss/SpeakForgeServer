@@ -147,7 +147,7 @@ REST_FRAMEWORK = {
 
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only for development
-CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,https://musical-secondly-goat.ngrok-free.app').split(',') if not DEBUG else []
+CORS_ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000,https://musical-secondly-goat.ngrok-free.app,https://speakforge-a52586b8a3f8.herokuapp.com').split(',') if not DEBUG else []
 
 # Add CORS_ALLOW_CREDENTIALS if you need to handle credentials
 CORS_ALLOW_CREDENTIALS = True
