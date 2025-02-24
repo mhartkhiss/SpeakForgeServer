@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpeakForge Translator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            margin: 10px 0;
+            padding: 10px;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        select, button {
+            padding: 8px;
+            margin: 5px 0;
+        }
+        button {
+            grid-column: span 2;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .model-select {
+            grid-column: span 2;
+            padding: 8px;
+            margin: 5px 0;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <h1>SpeakForge Translator</h1>
+    <div class="container">
+        <div style="flex: 1;">
+            <h3>Original Text</h3>
+            <textarea id="sourceText" placeholder="Enter text to translate"></textarea>
+            <div class="controls">
+                <select id="sourceLanguage">
+                    <option value="auto">Auto Detect</option>
+                    <option value="English">English</option>
+                    <option value="Bisaya">Bisaya (Cebuano)</option>
+                    <option value="Tagalog">Tagalog (Filipino)</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="French">French</option>
+                    <option value="German">German</option>
+                    <option value="Italian">Italian</option>
+                    <option value="Portuguese">Portuguese</option>
+                    <option value="Chinese">Chinese</option>
+                    <option value="Japanese">Japanese</option>
+                    <option value="Korean">Korean</option>
+                </select>
+                <select id="targetLanguage">
+                    <option value="English">English</option>
+                    <option value="Bisaya">Bisaya (Cebuano)</option>
+                    <option value="Tagalog">Tagalog (Filipino)</option>
+                    <option value="Spanish">Spanish</option>
+                    <option value="French">French</option>
+                    <option value="German">German</option>
+                    <option value="Italian">Italian</option>
+                    <option value="Portuguese">Portuguese</option>
+                    <option value="Chinese">Chinese</option>
+                    <option value="Japanese">Japanese</option>
+                    <option value="Korean">Korean</option>
+                </select>
+                <select id="model" class="model-select">
+                    <option value="claude">Claude (Anthropic)</option>
+                    <option value="gemini">Gemini (Google)</option>
+                    <option value="deepseek">DeepSeek</option>
+                </select>
+                <select id="translationMode">
+                    <option value="single">Single Translation</option>
+                    <option value="multiple">Multiple Variations</option>
+                </select>
+                <button onclick="translateText()">Translate</button>
+            </div>
+        </div>
+        <div style="flex: 1;">
+            <h3>Translated Text</h3>
+            <textarea id="translatedText" readonly></textarea>
+        </div>
+    </div>
+
+    <script>
+        async function translateText() {
+            const sourceText = document.getElementById('sourceText').value;
+            const sourceLanguage = document.getElementById('sourceLanguage').value;
+            const targetLanguage = document.getElementById('targetLanguage').value;
+            const translationMode = document.getElementById('translationMode').value;
+            const model = document.getElementById('model').value;
+            const translatedTextArea = document.getElementById('translatedText');
+
+            if (!sourceText) {
+                alert('Please enter text to translate');
+                return;
+            }
+
+            if (sourceLanguage === targetLanguage) {
+                alert('Source and target languages cannot be the same');
+                return;
+            }
+
+            try {
+                const response = await fetch('https://musical-secondly-goat.ngrok-free.app/api/translate/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: sourceText,
+                        source_language: sourceLanguage,
+                        target_language: targetLanguage,
+                        mode: translationMode,
+                        model: model
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    translatedTextArea.value = data.translated_text;
+                } else {
+                    alert('Translation failed: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html> 

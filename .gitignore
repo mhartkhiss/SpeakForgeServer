@@ -1,0 +1,12 @@
+#add venv
+venv/
+
+#add pycache
+__pycache__/
+
+#add .env
+.env
+
+#add .env.local
+.env.local
+
