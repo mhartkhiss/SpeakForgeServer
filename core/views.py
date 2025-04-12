@@ -155,7 +155,11 @@ def translate_db(request):
             translation_mode
         )
 
-        if cached_translation:
+        # Skip translation if source and target languages are the same
+        if source_language == target_language or (source_language == 'auto' and target_language == 'en'):
+            # Use original text as translation
+            translated_text = text_to_translate.strip('"')  # Remove quotes if present
+        elif cached_translation:
             translated_text = cached_translation
         else:
             # If not in cache, get translation from AI model
@@ -168,15 +172,16 @@ def translate_db(request):
             else:
                 return Response({"error": "Invalid model specified"}, status=400)
 
-            # Cache the new translation
-            cache_translation(
-                text_to_translate,
-                source_language,
-                target_language,
-                translated_text,
-                model,
-                translation_mode
-            )
+            # Cache the new translation if it's not a same-language case
+            if source_language != target_language:
+                cache_translation(
+                    text_to_translate,
+                    source_language,
+                    target_language,
+                    translated_text,
+                    model,
+                    translation_mode
+                )
 
         # Process translations and store in Firebase
         translations = process_translations(translated_text, translation_mode)
