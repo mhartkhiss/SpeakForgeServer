@@ -101,48 +101,6 @@ def translate(request):
     except Exception as e:
         return Response({"error": f"Translation failed: {str(e)}"}, status=500)
 
-def get_cached_translation(text, source_language, target_language, model='claude', variants='single'):
-    """
-    Check if a translation is already in the cache.
-    Returns the cached translation or None if not found.
-    """
-    # Create a hash of the request parameters
-    cache_key = hashlib.md5(f"{text}_{source_language}_{target_language}_{model}_{variants}".encode()).hexdigest()
-    
-    # Check if we have this in the cache
-    cache_ref = db.reference(f'translation_cache/{cache_key}')
-    cached_data = cache_ref.get()
-    
-    if cached_data:
-        # If we have a cached result and it's not too old, return it
-        timestamp = cached_data.get('timestamp', 0)
-        current_time = int(time.time())
-        
-        # Cache valid for 30 days
-        if current_time - timestamp < 30 * 24 * 60 * 60:
-            return cached_data.get('translated_text')
-    
-    return None
-
-def cache_translation(text, source_language, target_language, translated_text, model='claude', variants='single'):
-    """
-    Store a translation in the cache for future use.
-    """
-    # Create a hash of the request parameters
-    cache_key = hashlib.md5(f"{text}_{source_language}_{target_language}_{model}_{variants}".encode()).hexdigest()
-    
-    # Store the translation in the cache
-    cache_ref = db.reference(f'translation_cache/{cache_key}')
-    cache_ref.set({
-        'text': text,
-        'source_language': source_language,
-        'target_language': target_language,
-        'translated_text': translated_text,
-        'model': model,
-        'variants': variants,
-        'timestamp': int(time.time())
-    })
-
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def translate_db(request):
@@ -170,38 +128,15 @@ def translate_db(request):
             # Use original text as translation
             translated_text = text_to_translate.strip('"')
         else:
-            # First check if we have this translation cached
-            cached_translation = get_cached_translation(
-                text_to_translate,
-                source_language,
-                target_language,
-                model,
-                variants
-            )
-
-            if cached_translation:
-                translated_text = cached_translation
+            # Get translation from AI model
+            if model == 'claude':
+                translated_text = translate_with_claude(text_to_translate, source_language, target_language, variants, translation_mode)
+            elif model == 'gemini':
+                translated_text = translate_with_gemini(text_to_translate, source_language, target_language, variants, translation_mode)
+            elif model == 'deepseek':
+                translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, variants, translation_mode)
             else:
-                # If not in cache, get translation from AI model
-                if model == 'claude':
-                    translated_text = translate_with_claude(text_to_translate, source_language, target_language, variants, translation_mode)
-                elif model == 'gemini':
-                    translated_text = translate_with_gemini(text_to_translate, source_language, target_language, variants, translation_mode)
-                elif model == 'deepseek':
-                    translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, variants, translation_mode)
-                else:
-                    return Response({"error": "Invalid model specified"}, status=400)
-
-                # Cache this translation if it's not a same-language case
-                if source_language != target_language:
-                    cache_translation(
-                        text_to_translate,
-                        source_language,
-                        target_language,
-                        translated_text,
-                        model,
-                        variants
-                    )
+                return Response({"error": "Invalid model specified"}, status=400)
 
         # Process translations and store in Firebase
         translations = process_translations(translated_text, variants)
@@ -252,7 +187,6 @@ def translate_db(request):
             'variants': variants,
             'model': model,
             'translation_mode': translation_mode,
-            'cached': cached_translation is not None
         })
 
     except Exception as e:
@@ -318,9 +252,7 @@ def translate_with_claude(text, source_language, target_language, variants, tran
     # Apply translation mode (formal vs casual)
     formality_instruction = ""
     if translation_mode == "formal":
-        formality_instruction = "Use formal language and respectful tone in your translation. "
-    else:
-        formality_instruction = "Use casual, conversational language in your translation. "
+        formality_instruction = "Use formal language appropriate for academic or professional contexts in all variations. Filter out any profanity or inappropriate language completely. "
     
     # Language-specific instructions - will change with each request
     if variants == 'single':
@@ -361,9 +293,7 @@ def translate_with_gemini(text, source_language, target_language, variants, tran
     # Apply translation mode (formal vs casual)
     formality_instruction = ""
     if translation_mode == "formal":
-        formality_instruction = "Use formal language and respectful tone in your translation. "
-    else:
-        formality_instruction = "Use casual, conversational language in your translation. "
+        formality_instruction = "Use formal language appropriate for academic or professional contexts in all variations. Filter out any profanity or inappropriate language completely. "
     
     system_instruction = (
         f"You are a direct translator. "
@@ -418,9 +348,7 @@ def translate_with_deepseek(text, source_language, target_language, variants, tr
     # Apply translation mode (formal vs casual)
     formality_instruction = ""
     if translation_mode == "formal":
-        formality_instruction = "Use formal language and respectful tone in your translation. "
-    else:
-        formality_instruction = "Use casual, conversational language in your translation. "
+        formality_instruction = "Use formal language appropriate for academic or professional contexts in all variations. Filter out any profanity or inappropriate language completely. "
     
     system_prompt = (
         f"You are a direct translator. "
@@ -491,37 +419,15 @@ def translate_batch(request):
                 translations_results[target_language] = translated_text
                 continue
                 
-            # Check if this translation is in cache
-            cached_translation = get_cached_translation(
-                text_to_translate,
-                source_language,
-                target_language,
-                model,
-                variants
-            )
-            
-            if cached_translation:
-                translated_text = cached_translation
+            # Get translation from the selected AI model
+            if model == 'claude':
+                translated_text = translate_with_claude(text_to_translate, source_language, target_language, variants, translation_mode)
+            elif model == 'gemini':
+                translated_text = translate_with_gemini(text_to_translate, source_language, target_language, variants, translation_mode)
+            elif model == 'deepseek':
+                translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, variants, translation_mode)
             else:
-                # If not in cache, get translation from the selected AI model
-                if model == 'claude':
-                    translated_text = translate_with_claude(text_to_translate, source_language, target_language, variants, translation_mode)
-                elif model == 'gemini':
-                    translated_text = translate_with_gemini(text_to_translate, source_language, target_language, variants, translation_mode)
-                elif model == 'deepseek':
-                    translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, variants, translation_mode)
-                else:
-                    return Response({"error": "Invalid model specified"}, status=400)
-                
-                # Cache this translation
-                cache_translation(
-                    text_to_translate,
-                    source_language,
-                    target_language,
-                    translated_text,
-                    model,
-                    variants
-                )
+                return Response({"error": "Invalid model specified"}, status=400)
             
             # Process translation result
             processed = process_translations(translated_text, variants)
@@ -611,37 +517,15 @@ def translate_group(request):
                 translations_results[target_language] = translated_text
                 continue
                 
-            # Check if this translation is in cache
-            cached_translation = get_cached_translation(
-                text_to_translate,
-                source_language,
-                target_language,
-                model,
-                variants
-            )
-            
-            if cached_translation:
-                translated_text = cached_translation
+            # Get translation from the selected AI model
+            if model == 'claude':
+                translated_text = translate_with_claude(text_to_translate, source_language, target_language, variants, translation_mode)
+            elif model == 'gemini':
+                translated_text = translate_with_gemini(text_to_translate, source_language, target_language, variants, translation_mode)
+            elif model == 'deepseek':
+                translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, variants, translation_mode)
             else:
-                # If not in cache, get translation from the selected AI model
-                if model == 'claude':
-                    translated_text = translate_with_claude(text_to_translate, source_language, target_language, variants, translation_mode)
-                elif model == 'gemini':
-                    translated_text = translate_with_gemini(text_to_translate, source_language, target_language, variants, translation_mode)
-                elif model == 'deepseek':
-                    translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, variants, translation_mode)
-                else:
-                    return Response({"error": "Invalid model specified"}, status=400)
-                
-                # Cache this translation
-                cache_translation(
-                    text_to_translate,
-                    source_language,
-                    target_language,
-                    translated_text,
-                    model,
-                    variants
-                )
+                return Response({"error": "Invalid model specified"}, status=400)
             
             # Process translation result
             processed = process_translations(translated_text, variants)
