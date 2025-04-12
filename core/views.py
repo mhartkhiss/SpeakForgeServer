@@ -391,3 +391,217 @@ def translate_with_deepseek(text, source_language, target_language, mode):
 
 class TranslatorView(TemplateView):
     template_name = 'core/translator.html'
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def translate_batch(request):
+    """
+    Endpoint for translating text to multiple languages in a single request.
+    Results are stored in Firebase for group messages.
+    """
+    text_to_translate = request.data.get('text', '')
+    source_language = request.data.get('source_language', 'auto')
+    target_languages = request.data.get('target_languages', [])
+    translation_mode = request.data.get('mode', 'single')
+    model = request.data.get('model', 'claude').lower()
+    group_id = request.data.get('group_id')
+    message_id = request.data.get('message_id')
+    
+    if not all([text_to_translate, group_id, message_id]) or not target_languages:
+        return Response({
+            "error": "Missing required fields: text, group_id, message_id, or target_languages"
+        }, status=400)
+    
+    try:
+        # Results dictionary
+        translations_results = {}
+        
+        # Process each target language
+        for target_language in target_languages:
+            # Skip translation if source and target languages are the same
+            if source_language == target_language or (source_language == 'auto' and target_language == 'en'):
+                # Use original text as translation
+                translated_text = text_to_translate.strip('"')
+                translations_results[target_language] = translated_text
+                continue
+                
+            # Check if this translation is in cache
+            cached_translation = get_cached_translation(
+                text_to_translate,
+                source_language,
+                target_language,
+                model,
+                translation_mode
+            )
+            
+            if cached_translation:
+                translated_text = cached_translation
+            else:
+                # If not in cache, get translation from the selected AI model
+                if model == 'claude':
+                    translated_text = translate_with_claude(text_to_translate, source_language, target_language, translation_mode)
+                elif model == 'gemini':
+                    translated_text = translate_with_gemini(text_to_translate, source_language, target_language, translation_mode)
+                elif model == 'deepseek':
+                    translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, translation_mode)
+                else:
+                    return Response({"error": "Invalid model specified"}, status=400)
+                
+                # Cache this translation
+                cache_translation(
+                    text_to_translate,
+                    source_language,
+                    target_language,
+                    translated_text,
+                    model,
+                    translation_mode
+                )
+            
+            # Process translation result
+            processed = process_translations(translated_text, translation_mode)
+            translations_results[target_language] = processed['main_translation']
+        
+        # Get Firebase reference for the group message
+        messages_ref = db.reference(f'group_messages/{group_id}/{message_id}')
+        
+        # Set default translated message (use first translation or original if no translations)
+        default_translation = next(iter(translations_results.values())) if translations_results else text_to_translate
+        
+        # Update the message with translations
+        messages_ref.update({
+            'message': default_translation,
+            'sourceLanguage': source_language,
+        })
+        
+        # Update the translations map
+        translations_ref = messages_ref.child('translations')
+        translations_ref.update(translations_results)
+        
+        return Response({
+            'status': 'success',
+            'translations': translations_results,
+            'original_text': text_to_translate,
+            'source_language': source_language
+        })
+        
+    except Exception as e:
+        return Response({"error": f"Batch translation failed: {str(e)}"}, status=500)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def translate_group(request):
+    """
+    Endpoint for translating group messages.
+    This endpoint handles:
+    1. Fetching all languages from group members in Firebase
+    2. Translating the message to all needed languages
+    3. Saving translations back to Firebase
+    """
+    text_to_translate = request.data.get('text', '')
+    source_language = request.data.get('source_language', 'auto')
+    model = request.data.get('model', 'claude').lower()
+    group_id = request.data.get('group_id')
+    message_id = request.data.get('message_id')
+    
+    if not all([text_to_translate, group_id, message_id]):
+        return Response({
+            "error": "Missing required fields: text, group_id, or message_id"
+        }, status=400)
+    
+    try:
+        # First, get all members of the group
+        group_ref = db.reference(f'groups/{group_id}/members')
+        group_members = group_ref.get()
+        
+        if not group_members:
+            return Response({"error": "No members found in group"}, status=404)
+        
+        # Collect all languages from group members
+        target_languages = set()
+        for member_id in group_members.keys():
+            user_ref = db.reference(f'users/{member_id}/language')
+            user_language = user_ref.get()
+            
+            # Skip if it's the same as source language
+            if user_language and user_language != source_language:
+                target_languages.add(user_language)
+            elif not user_language:
+                # Default to English if no language is set
+                target_languages.add('en')
+        
+        # Results dictionary
+        translations_results = {}
+        
+        # Process each target language
+        for target_language in target_languages:
+            # Skip translation if source and target languages are the same
+            if source_language == target_language or (source_language == 'auto' and target_language == 'en'):
+                # Use original text as translation
+                translated_text = text_to_translate.strip('"')
+                translations_results[target_language] = translated_text
+                continue
+                
+            # Check if this translation is in cache
+            cached_translation = get_cached_translation(
+                text_to_translate,
+                source_language,
+                target_language,
+                model,
+                'single'
+            )
+            
+            if cached_translation:
+                translated_text = cached_translation
+            else:
+                # If not in cache, get translation from the selected AI model
+                if model == 'claude':
+                    translated_text = translate_with_claude(text_to_translate, source_language, target_language, 'single')
+                elif model == 'gemini':
+                    translated_text = translate_with_gemini(text_to_translate, source_language, target_language, 'single')
+                elif model == 'deepseek':
+                    translated_text = translate_with_deepseek(text_to_translate, source_language, target_language, 'single')
+                else:
+                    return Response({"error": "Invalid model specified"}, status=400)
+                
+                # Cache this translation
+                cache_translation(
+                    text_to_translate,
+                    source_language,
+                    target_language,
+                    translated_text,
+                    model,
+                    'single'
+                )
+            
+            # Process translation result
+            processed = process_translations(translated_text, 'single')
+            translations_results[target_language] = processed['main_translation']
+        
+        # Also add the original language to translations
+        translations_results[source_language] = text_to_translate.strip('"')
+        
+        # Get Firebase reference for the group message
+        messages_ref = db.reference(f'group_messages/{group_id}/{message_id}')
+        
+        # Set default translated message (use first translation or original if no translations)
+        default_translation = next(iter(translations_results.values())) if translations_results else text_to_translate.strip('"')
+        
+        # Update the message with translations
+        messages_ref.update({
+            'message': default_translation,
+            'sourceLanguage': source_language,
+        })
+        
+        # Update the translations map
+        translations_ref = messages_ref.child('translations')
+        translations_ref.update(translations_results)
+        
+        return Response({
+            'status': 'success',
+            'translations_count': len(translations_results),
+            'languages': list(translations_results.keys()),
+            'original_text': text_to_translate
+        })
+        
+    except Exception as e:
+        return Response({"error": f"Group translation failed: {str(e)}"}, status=500)
