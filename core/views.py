@@ -133,12 +133,12 @@ def translate_db(request):
     """
     text_to_translate = request.data.get('text', '')
     source_language = request.data.get('source_language', 'auto')
-    target_language = request.data.get('target_language', 'en')
     translation_mode = request.data.get('mode', 'multiple')
     model = request.data.get('model', 'claude').lower()
     room_id = request.data.get('room_id')
     message_id = request.data.get('message_id')
     is_group = request.data.get('is_group', False)
+    target_language = request.data.get('target_language', 'en')
 
     if not all([text_to_translate, room_id, message_id]):
         return Response({
@@ -185,20 +185,37 @@ def translate_db(request):
         ref_path = 'group_messages' if is_group else 'messages'
         messages_ref = db.reference(f'{ref_path}/{room_id}/{message_id}')
         
-        if translation_mode == 'multiple':
-            messages_ref.update({
+        if is_group:
+            # For group messages, follow the structure with translations field
+            update_data = {
                 'message': translations['main_translation'],
                 'sourceLanguage': source_language,
-                'messageVar1': translations.get('var1', ''),
-                'messageVar2': translations.get('var2', ''),
-                'messageVar3': translations.get('var3', '')
+            }
+            
+            # Add the translation to the translations map using the target language as key
+            translations_ref = messages_ref.child('translations')
+            translations_ref.update({
+                target_language: translations['main_translation']
             })
+            
+            # Update the main message fields
+            messages_ref.update(update_data)
         else:
-            messages_ref.update({
-                'message': translations['main_translation'],
-                'sourceLanguage': source_language
-            })
-
+            # For direct messages, use the original approach
+            if translation_mode == 'multiple':
+                messages_ref.update({
+                    'message': translations['main_translation'],
+                    'sourceLanguage': source_language,
+                    'messageVar1': translations.get('var1', ''),
+                    'messageVar2': translations.get('var2', ''),
+                    'messageVar3': translations.get('var3', '')
+                })
+            else:
+                messages_ref.update({
+                    'message': translations['main_translation'],
+                    'sourceLanguage': source_language
+                })
+        
         return Response({
             'original_text': text_to_translate,
             'translations': translations,
