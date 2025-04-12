@@ -138,6 +138,7 @@ def translate_db(request):
     model = request.data.get('model', 'claude').lower()
     room_id = request.data.get('room_id')
     message_id = request.data.get('message_id')
+    is_group = request.data.get('is_group', False)
 
     if not all([text_to_translate, room_id, message_id]):
         return Response({
@@ -180,8 +181,9 @@ def translate_db(request):
         # Process translations and store in Firebase
         translations = process_translations(translated_text, translation_mode)
         
-        # Get Firebase reference
-        messages_ref = db.reference(f'messages/{room_id}/{message_id}')
+        # Determine the correct Firebase reference path based on is_group flag
+        ref_path = 'group_messages' if is_group else 'messages'
+        messages_ref = db.reference(f'{ref_path}/{room_id}/{message_id}')
         
         if translation_mode == 'multiple':
             messages_ref.update({
