@@ -284,22 +284,36 @@ def process_translations(translated_text, mode='multiple'):
 
 def translate_with_claude(text, source_language, target_language, mode):
     """Helper function for Claude translation"""
-    system_message = (
-        f"You are a direct translator. "
-        + (f"Translate from {source_language} " if source_language != 'auto' else "")
-        + f"to {target_language}. "
-        + (
-            "Output ONLY the translation itself - no explanations, no language detection notes, no additional text. "
-            "Preserve any slang or explicit words from the original text."
-            if mode == 'single' else
-            f"Translate to {target_language} and provide exactly 3 numbered variations. "
-            "Output ONLY the translations - no explanations, no language detection notes. "
-            "Format: 1. [translation]\\n2. [translation]\\n3. [translation]"
-        )
-    )
+    # Base translator instruction - can be cached
+    base_instruction = {
+        "type": "text",
+        "text": "You are a direct translator. Your job is to translate text accurately while preserving meaning and tone.",
+        "cache_control": {"type": "ephemeral"}
+    }
+    
+    # Language-specific instructions - will change with each request
+    if mode == 'single':
+        language_instruction = {
+            "type": "text",
+            "text": ((f"Translate from {source_language} " if source_language != 'auto' else "") +
+                   f"to {target_language}. " +
+                   "Output ONLY the translation itself - no explanations, no language detection notes, no additional text. " +
+                   "Preserve any slang or explicit words from the original text.")
+        }
+    else:
+        language_instruction = {
+            "type": "text",
+            "text": ((f"Translate from {source_language} " if source_language != 'auto' else "") +
+                   f"to {target_language} and provide exactly 3 numbered variations. " +
+                   "Output ONLY the translations - no explanations, no language detection notes. " +
+                   "Format: 1. [translation]\\n2. [translation]\\n3. [translation]")
+        }
+
+    # Create system message as a list of dictionaries
+    system_message = [base_instruction, language_instruction]
 
     message = anthropic_client.messages.create(
-        model="claude-3-5-sonnet-20241022",
+        model="claude-3-7-sonnet-20250219",  # Updated to latest model
         max_tokens=8192,
         temperature=0 if mode == 'single' else 0.7,
         system=system_message,
