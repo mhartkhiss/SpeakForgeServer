@@ -205,11 +205,12 @@ def process_translations(translated_text, variants='multiple'):
     Process the translated text into variations.
     Returns a dict with main translation and variations.
     """
-    # For single variants, just return the main translation
+    # For single variants, return the main translation and set var1 to the same value
     if variants == 'single':
         cleaned_text = translated_text.strip().strip('"')
         return {
-            'main_translation': cleaned_text
+            'main_translation': cleaned_text,
+            'var1': cleaned_text  # Add var1 to ensure translation1 is created for single variants
         }
         
     # For multiple variants, process variations
@@ -257,8 +258,7 @@ def update_firebase_message(ref_path, room_id, message_id, translations, source_
     if is_group:
         # For group messages, follow the structure with translations field
         update_data = {
-            'message': translations['main_translation'],
-            'sourceLanguage': source_language,
+            'senderLanguage': source_language,  # Use senderLanguage instead of sourceLanguage
             'translationMode': translation_mode,
         }
         
@@ -268,24 +268,36 @@ def update_firebase_message(ref_path, room_id, message_id, translations, source_
             target_language: translations['main_translation']
         })
         
-        # Update the main message fields
+        # Update the main message fields (without changing the message content)
         messages_ref.update(update_data)
     else:
         # For direct messages
-        if 'var1' in translations:
+        if 'var1' in translations and 'var2' in translations and 'var3' in translations:
+            # Full regeneration with all three variations
             messages_ref.update({
-                'message': translations['main_translation'],
-                'sourceLanguage': source_language,
+                'senderLanguage': source_language,
                 'translationMode': translation_mode,
-                'messageVar1': translations.get('var1', ''),
-                'messageVar2': translations.get('var2', ''),
-                'messageVar3': translations.get('var3', '')
             })
+            
+            # Update translations node with all three variations
+            translations_ref = messages_ref.child('translations')
+            translations_updates = {
+                'translation1': translations.get('var1', ''),
+                'translation2': translations.get('var2', ''),
+                'translation3': translations.get('var3', '')
+            }
+            translations_ref.update(translations_updates)
         else:
+            # Single translation - only update translation1
             messages_ref.update({
-                'message': translations['main_translation'],
-                'sourceLanguage': source_language,
+                'senderLanguage': source_language,
                 'translationMode': translation_mode,
+            })
+            
+            # Add single translation to translations node
+            translations_ref = messages_ref.child('translations')
+            translations_ref.update({
+                'translation1': translations['main_translation']
             })
 
 @api_view(['POST'])
@@ -500,15 +512,30 @@ def translate_group(request):
         # Get Firebase reference for the group message
         messages_ref = db.reference(f'group_messages/{group_id}/{message_id}')
         
-        # Set default translated message (use first translation or original if no translations)
-        default_translation = next(iter(translations_results.values())) if translations_results else text_to_translate.strip('"')
+        # Use the original message in the source language for the message field
+        original_message = text_to_translate.strip('"')
         
-        # Update the message with translations
-        messages_ref.update({
-            'message': default_translation,
-            'sourceLanguage': source_language,
-            'translationMode': translation_mode,
-        })
+        # Check if this is a new message
+        message_data = messages_ref.get()
+        
+        # Only set the message field for new messages
+        if message_data is None:
+            # This is a new message, set the message field
+            messages_ref.update({
+                'message': original_message,
+                'senderLanguage': source_language,  # Only use senderLanguage
+                'translationMode': translation_mode,
+            })
+        else:
+            # This is an existing message, only update metadata
+            messages_ref.update({
+                'senderLanguage': source_language,  # Only use senderLanguage
+                'translationMode': translation_mode,
+            })
+        
+        # Remove source language from translations since it's redundant with message field
+        if source_language in translations_results:
+            del translations_results[source_language]
         
         # Update the translations map
         translations_ref = messages_ref.child('translations')
@@ -560,7 +587,42 @@ def regenerate_translation(request):
         if message_id and room_id:
             # Determine the correct Firebase reference path based on is_group flag
             ref_path = 'group_messages' if is_group else 'messages'
-            update_firebase_message(ref_path, room_id, message_id, translations, source_language, translation_mode, is_group, target_language)
+            
+            # Get reference to the message
+            message_ref = db.reference(f'{ref_path}/{room_id}/{message_id}')
+            
+            # For group messages, only update the translations map for the target language
+            # instead of updating the main message field
+            if is_group:
+                # Update only the translations map for the target language
+                translations_ref = message_ref.child('translations')
+                
+                # Add each translation variant to the translations map
+                if variants == 'multiple':
+                    # If there are multiple variants, only update the first one
+                    # (since translations map only supports one translation per language)
+                    if 'main_translation' in translations:
+                        translations_ref.child(target_language).set(translations['main_translation'])
+                else:
+                    # Single variant
+                    if 'main_translation' in translations:
+                        translations_ref.child(target_language).set(translations['main_translation'])
+                
+                # Store variants if provided
+                if 'variation1' in translations:
+                    # Create a map of translations with the new structure
+                    translations_updates = {}
+                    translations_updates['translation1'] = translations['variation1']
+                    if 'variation2' in translations:
+                        translations_updates['translation2'] = translations['variation2']
+                    if 'variation3' in translations:
+                        translations_updates['translation3'] = translations['variation3']
+                    
+                    # Update the translations node ONLY
+                    translations_ref.update(translations_updates)
+            else:
+                # For direct messages, use the original update_firebase_message function
+                update_firebase_message(ref_path, room_id, message_id, translations, source_language, translation_mode, is_group, target_language)
 
         return Response({
             'original_text': text_to_translate,
@@ -605,20 +667,38 @@ def get_conversation_context(group_id, message_id, max_context_messages=10, sour
     # Get only the last N messages before the current one
     context_messages = all_messages[-max_context_messages:] if len(all_messages) > max_context_messages else all_messages
     
+    # Create a mapping of user IDs to anonymous numbered names
+    user_id_map = {}
+    current_user_number = 1
+    
     # Format context for AI models
     formatted_context = []
     for msg in context_messages:
         msg_data = msg['data']
         
-        # Use original message if available, otherwise use translated message
-        message_text = msg_data.get('messageOG', msg_data.get('message', ''))
+        # Get message in the source language from translations map
+        message_text = msg_data.get('message', '')
         
         # If source language is specified and we have translations, use the specific language
         if source_language and 'translations' in msg_data and source_language in msg_data['translations']:
             message_text = msg_data['translations'][source_language]
+        # If we don't have the translation in source language but have sender language
+        elif 'translations' in msg_data and 'senderLanguage' in msg_data:
+            sender_language = msg_data.get('senderLanguage')
+            if sender_language and sender_language in msg_data['translations']:
+                message_text = msg_data['translations'][sender_language]
+        
+        # Get the sender ID and assign an anonymous user name
+        sender_id = msg_data.get('senderId', 'unknown')
+        
+        # If this user hasn't been seen before, assign a new number
+        if sender_id not in user_id_map:
+            user_id_map[sender_id] = f"User {current_user_number}"
+            current_user_number += 1
             
-        sender_name = msg_data.get('senderName', 'Unknown User')
-        formatted_context.append(f"{sender_name}: {message_text}")
+        # Use the anonymous user name in the context
+        anonymous_name = user_id_map[sender_id]
+        formatted_context.append(f"{anonymous_name}: {message_text}")
     
     return formatted_context
 
@@ -638,6 +718,7 @@ def translate_with_context(text, source_language, target_language, context, mode
     if context and len(context) > 0:
         context_text = "\n".join(context)
         print(f"Using context with {len(context)} messages")
+        print(f"Context messages:\n{context_text}")
     else:
         print("No context provided for translation")
     
@@ -654,6 +735,14 @@ def translate_with_context(text, source_language, target_language, context, mode
             f"from {source_language} to {target_language}. "
             f"Only output the translation, no explanations or additional text."
         )
+    
+    print(f"\n===== CONTEXT-AWARE TRANSLATION =====")
+    print(f"Source language: {source_language}")
+    print(f"Target language: {target_language}")
+    print(f"Text to translate: {text}")
+    print(f"Translation mode: {translation_mode}")
+    print(f"Model: {model}")
+    print(f"Full prompt:\n{context_instruction}\n")
     
     try:
         # Choose which model to use
@@ -673,6 +762,9 @@ def translate_with_context(text, source_language, target_language, context, mode
                     "text": context_instruction
                 })
             
+            print(f"Claude system message: {system_message}")
+            print(f"Claude user message: {text}")
+            
             message = anthropic_client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=8192,
@@ -681,7 +773,9 @@ def translate_with_context(text, source_language, target_language, context, mode
                 messages=[{"role": "user", "content": text}]
             )
             
-            return message.content[0].text.strip() if message.content else "Translation failed."
+            result = message.content[0].text.strip() if message.content else "Translation failed."
+            print(f"Claude response: {result}")
+            return result
             
         elif model == 'gemini':
             # Configure generation parameters
@@ -692,6 +786,9 @@ def translate_with_context(text, source_language, target_language, context, mode
                 max_output_tokens=8192,
                 system_instruction=context_instruction
             )
+
+            print(f"Gemini system instruction: {context_instruction}")
+            print(f"Gemini prompt: {text}")
 
             # Try each client until successful
             last_error = None
@@ -704,7 +801,9 @@ def translate_with_context(text, source_language, target_language, context, mode
                     )
                     
                     if response and hasattr(response, 'text'):
-                        return response.text.strip()
+                        result = response.text.strip()
+                        print(f"Gemini response: {result}")
+                        return result
                     
                 except Exception as e:
                     last_error = str(e)
@@ -717,6 +816,9 @@ def translate_with_context(text, source_language, target_language, context, mode
                 raise Exception("All Gemini API keys failed with unknown error")
                 
         elif model == 'deepseek':
+            print(f"DeepSeek system instruction: {context_instruction}")
+            print(f"DeepSeek prompt: {text}")
+            
             try:
                 response = deepseek_client.chat.completions.create(
                     model="deepseek-chat",
@@ -730,6 +832,7 @@ def translate_with_context(text, source_language, target_language, context, mode
                 content = response.choices[0].message.content.strip()
                 # Clean think tags if present
                 content = content.replace("<think>", "").replace("</think>", "").strip()
+                print(f"DeepSeek response: {content}")
                 return content
             except Exception as e:
                 raise Exception(f"DeepSeek API error: {str(e)}")
@@ -808,6 +911,198 @@ def update_translation_memory(group_id, text, translated_text, source_language, 
                 print(f"Error updating translation memory: {str(e)}")
                 continue
 
+def translate_with_batch_context(text, source_language, target_languages, context, model, translation_mode="casual"):
+    """Helper function for translation with conversation context for multiple languages at once"""
+    
+    # Make sure we have text to translate
+    if not text:
+        return {"error": "Translation failed - empty text"}
+        
+    # Clean up text if it has quotes
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    
+    # Construct the system instruction to include context
+    context_text = ""
+    if context and len(context) > 0:
+        context_text = "\n".join(context)
+        print(f"Using context with {len(context)} messages")
+        print(f"Context messages:\n{context_text}")
+    else:
+        print("No context provided for translation")
+    
+    # Create context instruction with multiple languages
+    target_languages_list = sorted(list(target_languages))
+    languages_formatted = ", ".join(target_languages_list)
+    
+    print(f"\n===== BATCH CONTEXT-AWARE TRANSLATION =====")
+    print(f"Source language: {source_language}")
+    print(f"Target languages: {languages_formatted}")
+    print(f"Text to translate: {text}")
+    print(f"Translation mode: {translation_mode}")
+    print(f"Model: {model}")
+    
+    context_prefix = ""
+    if context_text:
+        context_prefix = f"""Before translating, consider the following conversation context:
+
+{context_text}
+
+"""
+    
+    # Build prompt for multiple language translation
+    system_instruction = f"""You are a direct translator. Translate the input from {source_language} to multiple languages at once.
+{context_prefix}Translate the following text to these languages: {languages_formatted}
+
+Use {translation_mode} language style for all translations.
+
+Format your response exactly as follows, with each language on its own line with the format "Language: translation":
+"""
+
+    for lang in target_languages_list:
+        system_instruction += f"\n{lang}: [translation in {lang}]"
+    
+    print(f"Full prompt:\n{system_instruction}\n")
+    
+    try:
+        # Choose which model to use
+        if model == 'claude':
+            message = anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=8192,
+                temperature=0.1,
+                system=system_instruction,
+                messages=[{"role": "user", "content": text}]
+            )
+            
+            result = message.content[0].text.strip() if message.content else "Translation failed."
+            print(f"Claude batch response: {result}")
+            
+            # Parse the response to get individual translations
+            translations = {}
+            for line in result.splitlines():
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    language = parts[0].strip()
+                    translation = parts[1].strip()
+                    translations[language] = translation
+            
+            # Add source language original text
+            translations[source_language] = text
+            
+            return translations
+            
+        elif model == 'gemini':
+            # Configure generation parameters
+            generation_config = types.GenerateContentConfig(
+                temperature=0.1,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=8192,
+                system_instruction=system_instruction
+            )
+
+            # Try each client until successful
+            last_error = None
+            for client in gemini_clients:
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=[text],
+                        config=generation_config
+                    )
+                    
+                    if response and hasattr(response, 'text'):
+                        result = response.text.strip()
+                        print(f"Gemini batch response: {result}")
+                        
+                        # Parse the response to get individual translations
+                        translations = {}
+                        for line in result.splitlines():
+                            line = line.strip()
+                            if not line or ":" not in line:
+                                continue
+                            parts = line.split(":", 1)
+                            if len(parts) == 2:
+                                language = parts[0].strip()
+                                translation = parts[1].strip()
+                                translations[language] = translation
+                        
+                        # Add source language original text
+                        translations[source_language] = text
+                        
+                        return translations
+                    
+                except Exception as e:
+                    last_error = str(e)
+                    print(f"Gemini API error: {last_error}")
+                    continue  # Try next client if current one fails
+            
+            if last_error:
+                raise Exception(f"All Gemini API keys failed. Last error: {last_error}")
+            else:
+                raise Exception("All Gemini API keys failed with unknown error")
+                
+        elif model == 'deepseek':
+            try:
+                response = deepseek_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": text}
+                    ],
+                    stream=False
+                )
+
+                content = response.choices[0].message.content.strip()
+                # Clean think tags if present
+                content = content.replace("<think>", "").replace("</think>", "").strip()
+                print(f"DeepSeek batch response: {content}")
+                
+                # Parse the response to get individual translations
+                translations = {}
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or ":" not in line:
+                        continue
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        language = parts[0].strip()
+                        translation = parts[1].strip()
+                        translations[language] = translation
+                
+                # Add source language original text
+                translations[source_language] = text
+                
+                return translations
+                
+            except Exception as e:
+                raise Exception(f"DeepSeek API error: {str(e)}")
+        else:
+            # Fallback to individual translations if model not recognized
+            print(f"Unrecognized model '{model}', falling back to individual translations")
+            translations = {}
+            for target_language in target_languages:
+                translations[target_language] = get_translation(text, source_language, target_language, 'single', translation_mode, 'claude')
+            translations[source_language] = text
+            return translations
+            
+    except Exception as e:
+        print(f"Batch context-aware translation error: {str(e)}")
+        # Fallback to individual translations if batch fails
+        try:
+            translations = {}
+            for target_language in target_languages:
+                translations[target_language] = get_translation(text, source_language, target_language, 'single', translation_mode, 'claude')
+            translations[source_language] = text
+            return translations
+        except Exception as fallback_error:
+            print(f"Fallback translation also failed: {str(fallback_error)}")
+            return {lang: f"Translation failed: {str(e)}" for lang in target_languages}
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def translate_group_context(request):
@@ -815,7 +1110,7 @@ def translate_group_context(request):
     Enhanced endpoint for translating group messages with conversation context.
     This endpoint handles:
     1. Fetching previous messages as context
-    2. Translating with context awareness 
+    2. Translating with context awareness to all needed languages in a single API call
     3. Saving translations back to Firebase
     4. Updating translation memory
     """
@@ -871,66 +1166,53 @@ def translate_group_context(request):
             print(f"Error getting conversation context: {str(e)}")
             # Continue without context if there's an error
         
-        # Results dictionary
-        translations_results = {}
-        
-        # Process each target language
-        for target_language in target_languages:
-            # Skip if source and target are the same
-            if source_language == target_language or (source_language == 'auto' and target_language == 'en'):
-                translations_results[target_language] = text_to_translate.strip('"')
-                continue
-                
-            try:
-                # Get context-aware translation
-                translated_text = translate_with_context(
-                    text_to_translate, 
-                    source_language, 
-                    target_language, 
-                    context, 
-                    model, 
-                    translation_mode
-                )
-                
-                # Process translation result
-                translations_results[target_language] = translated_text.strip()
-                
-                # Update translation memory
-                try:
-                    if translated_text:
-                        update_translation_memory(
-                            group_id, 
-                            text_to_translate, 
-                            translated_text, 
-                            source_language, 
-                            target_language
-                        )
-                except Exception as memory_error:
-                    print(f"Error updating translation memory: {str(memory_error)}")
-                    # Continue even if memory update fails
-            except Exception as translate_error:
-                print(f"Error translating to {target_language}: {str(translate_error)}")
-                # Use original text if translation fails
-                translations_results[target_language] = text_to_translate.strip('"')
-        
-        # Also add the original language to translations
-        translations_results[source_language] = text_to_translate.strip('"')
+        # If no target languages or only the source language, skip translation
+        if not target_languages or (len(target_languages) == 1 and source_language in target_languages):
+            translations_results = {source_language: text_to_translate.strip('"')}
+        else:
+            # Use the new batch translation function for all languages at once
+            translations_results = translate_with_batch_context(
+                text_to_translate, 
+                source_language, 
+                target_languages, 
+                context, 
+                model, 
+                translation_mode
+            )
+            
+            # Ensure the source language is in the results
+            if source_language not in translations_results:
+                translations_results[source_language] = text_to_translate.strip('"')
         
         try:
             # Get Firebase reference for the group message
             messages_ref = db.reference(f'group_messages/{group_id}/{message_id}')
             
-            # Set default translated message (use first translation or original if no translations)
-            default_translation = next(iter(translations_results.values())) if translations_results else text_to_translate.strip('"')
+            # Use the original message in the source language for the message field
+            original_message = text_to_translate.strip('"')
             
-            # Update the message with translations
-            messages_ref.update({
-                'message': default_translation,
-                'messageOG': text_to_translate.strip('"'),
-                'sourceLanguage': source_language,
-                'translationMode': translation_mode,
-            })
+            # Check if this is a new message
+            message_data = messages_ref.get()
             
+            # Only set the message field for new messages
+            if message_data is None:
+                # This is a new message, set the message field
+                messages_ref.update({
+                    'message': original_message,
+                    'senderLanguage': source_language,  # Only use senderLanguage
+                    'translationMode': translation_mode,
+                })
+            else:
+                # This is an existing message, only update metadata
+                messages_ref.update({
+                    'senderLanguage': source_language,  # Only use senderLanguage
+                    'translationMode': translation_mode,
+                })
+            
+            # Remove source language from translations since it's redundant with message field
+            if source_language in translations_results:
+                del translations_results[source_language]
+                
             # Update the translations map
             translations_ref = messages_ref.child('translations')
             translations_ref.update(translations_results)
@@ -945,7 +1227,8 @@ def translate_group_context(request):
             'original_text': text_to_translate,
             'translation_mode': translation_mode,
             'context_used': len(context) > 0,
-            'context_messages': len(context)
+            'context_messages': len(context),
+            'batch_translation': True
         })
         
     except ValueError as e:
