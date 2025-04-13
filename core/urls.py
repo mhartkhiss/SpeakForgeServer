@@ -9,5 +9,6 @@ urlpatterns = [
     path('translate-db/', views.translate_db, name='translate-db'),
     path('translate-batch/', views.translate_batch, name='translate-batch'),
     path('translate-group/', views.translate_group, name='translate-group'),
+    path('regenerate-translation/', views.regenerate_translation, name='regenerate-translation'),
     path('translator/', views.TranslatorView.as_view(), name='translator-interface'),
 ] 
