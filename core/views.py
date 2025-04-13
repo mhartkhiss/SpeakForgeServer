@@ -257,6 +257,7 @@ def update_firebase_message(ref_path, room_id, message_id, translations, source_
     
     if is_group:
         # For group messages, follow the structure with translations field
+        # Do not modify translationState for group messages
         update_data = {
             'senderLanguage': source_language,  # Use senderLanguage instead of sourceLanguage
             'translationMode': translation_mode,
@@ -277,6 +278,7 @@ def update_firebase_message(ref_path, room_id, message_id, translations, source_
             messages_ref.update({
                 'senderLanguage': source_language,
                 'translationMode': translation_mode,
+                'translationState': 'TRANSLATED'  # Set state to TRANSLATED when translations are added
             })
             
             # Update translations node with all three variations
@@ -292,6 +294,7 @@ def update_firebase_message(ref_path, room_id, message_id, translations, source_
             messages_ref.update({
                 'senderLanguage': source_language,
                 'translationMode': translation_mode,
+                'translationState': 'TRANSLATED'  # Set state to TRANSLATED when translations are added
             })
             
             # Add single translation to translations node
@@ -577,6 +580,11 @@ def regenerate_translation(request):
         }, status=400)
 
     try:
+        # Set state to TRANSLATING before starting regeneration
+        ref_path = 'group_messages' if is_group else 'messages'
+        message_ref = db.reference(f'{ref_path}/{room_id}/{message_id}')
+        message_ref.update({'translationState': 'TRANSLATING'})
+
         # Get translation
         translated_text = get_translation(text_to_translate, source_language, target_language, variants, translation_mode, model)
 
@@ -620,6 +628,9 @@ def regenerate_translation(request):
                     
                     # Update the translations node ONLY
                     translations_ref.update(translations_updates)
+                
+                # Set state to TRANSLATED after successful update
+                message_ref.update({'translationState': 'TRANSLATED'})
             else:
                 # For direct messages, use the original update_firebase_message function
                 update_firebase_message(ref_path, room_id, message_id, translations, source_language, translation_mode, is_group, target_language)
@@ -635,8 +646,18 @@ def regenerate_translation(request):
         })
         
     except ValueError as e:
+        # Set state back to null if translation fails
+        if message_id and room_id:
+            ref_path = 'group_messages' if is_group else 'messages'
+            message_ref = db.reference(f'{ref_path}/{room_id}/{message_id}')
+            message_ref.update({'translationState': None})
         return Response({"error": str(e)}, status=400)
     except Exception as e:
+        # Set state back to null if translation fails
+        if message_id and room_id:
+            ref_path = 'group_messages' if is_group else 'messages'
+            message_ref = db.reference(f'{ref_path}/{room_id}/{message_id}')
+            message_ref.update({'translationState': None})
         return Response({"error": f"Translation regeneration failed: {str(e)}"}, status=500)
 
 def get_conversation_context(group_id, message_id, max_context_messages=10, source_language=None):
